@@ -1,0 +1,30 @@
+services:
+  kun-myys:
+    build: .
+    container_name: kun-myys
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+      APP_URL: ${APP_URL:-http://127.0.0.1:8080}
+      DATABASE_PATH: /app/data/kun-myys.sqlite
+      EVIDENCE_PATH: /app/storage/evidence
+      KEYS_PATH: /app/data/keys
+      SESSION_TTL_HOURS: 12
+      MAX_UPLOAD_MB: 5
+      TRUST_PROXY: "true"
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - kun-myys-data:/app/data
+      - kun-myys-evidence:/app/storage/evidence
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  kun-myys-data:
+  kun-myys-evidence:
