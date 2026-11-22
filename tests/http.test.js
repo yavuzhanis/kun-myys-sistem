@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 
 const root = path.resolve(import.meta.dirname, '..');
 
@@ -25,7 +26,13 @@ test('giriş, belge düzenleme ve kamuya açık doğrulama uçtan uca çalışı
     env: { ...process.env, PORT: String(port), APP_URL: base, DATABASE_PATH: path.join(temp, 'test.sqlite'), EVIDENCE_PATH: path.join(temp, 'evidence'), KEYS_PATH: path.join(temp, 'keys') },
     stdio: ['ignore', 'pipe', 'pipe']
   });
-  t.after(() => { child.kill('SIGTERM'); fs.rmSync(temp, { recursive: true, force: true }); });
+  t.after(async () => {
+    if (child.exitCode === null) {
+      child.kill('SIGTERM');
+      await once(child, 'exit');
+    }
+    fs.rmSync(temp, { recursive: true, force: true });
+  });
   await waitForServer(base, child);
 
   const health = await fetch(`${base}/api/health`);
