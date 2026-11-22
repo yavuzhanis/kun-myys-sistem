@@ -15,10 +15,14 @@ function base64url(input) {
   return Buffer.from(input).toString('base64url');
 }
 
-function ensureKeys() {
+const ACTIVE_PRIVATE_FILE = 'issuer-ed25519-private.pem';
+const ACTIVE_PUBLIC_FILE = 'issuer-ed25519-public.pem';
+const RETIRED_DIR = 'retired';
+
+function ensureKeyPair() {
   fs.mkdirSync(config.keysPath, { recursive: true, mode: 0o700 });
-  const privatePath = path.join(config.keysPath, 'issuer-ed25519-private.pem');
-  const publicPath = path.join(config.keysPath, 'issuer-ed25519-public.pem');
+  const privatePath = path.join(config.keysPath, ACTIVE_PRIVATE_FILE);
+  const publicPath = path.join(config.keysPath, ACTIVE_PUBLIC_FILE);
   if (!fs.existsSync(privatePath) || !fs.existsSync(publicPath)) {
     const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
     fs.writeFileSync(privatePath, privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
@@ -28,6 +32,35 @@ function ensureKeys() {
     privateKey: crypto.createPrivateKey(fs.readFileSync(privatePath)),
     publicKey: crypto.createPublicKey(fs.readFileSync(publicPath))
   };
+}
+
+function retiredPublicKeys() {
+  const dir = path.join(config.keysPath, RETIRED_DIR);
+  const keys = [];
+  if (!fs.existsSync(dir)) return keys;
+  for (const file of fs.readdirSync(dir).sort()) {
+    const match = file.match(/^key-(\d+)-.*\.pem$/i);
+    if (!match) continue;
+    try {
+      keys.push({ id: `key-${Number(match[1])}`, publicKey: crypto.createPublicKey(fs.readFileSync(path.join(dir, file))) });
+    } catch { /* okunamayan retired anahtarlar atlanır */ }
+  }
+  return keys;
+}
+
+// Aktif imza anahtarı ile retired/ altındaki eski açık anahtarları DID üye kimliği key-<n>
+// biçiminde birleştirir. Aktif anahtar boş kalan ilk numarayı alır; böylece yeni kurulumlar
+// key-1 ile başlar ve rotasyon sonrası eski belgeler retired anahtarıyla doğrulanmaya devam eder.
+function issuerKeys() {
+  const pair = ensureKeyPair();
+  const retired = retiredPublicKeys();
+  const used = new Set(retired.map((key) => key.id));
+  let sequence = 1;
+  while (used.has(`key-${sequence}`)) sequence += 1;
+  const active = { id: `key-${sequence}`, privateKey: pair.privateKey, publicKey: pair.publicKey };
+  const verification = [...retired, { id: active.id, publicKey: active.publicKey }]
+    .sort((a, b) => Number(a.id.slice(4)) - Number(b.id.slice(4)));
+  return { active, verification };
 }
 
 function issuerProfile() {
@@ -42,31 +75,32 @@ function issuerProfile() {
 }
 
 export function publicKeyDocument() {
-  const { publicKey } = ensureKeys();
+  const { verification } = issuerKeys();
+  const methods = verification.map((key) => ({
+    id: `${config.institution.issuerDid}#${key.id}`,
+    type: 'JsonWebKey2020',
+    controller: config.institution.issuerDid,
+    publicKeyJwk: key.publicKey.export({ format: 'jwk' })
+  }));
   return {
     '@context': ['https://www.w3.org/ns/did/v1'],
     id: config.institution.issuerDid,
-    verificationMethod: [{
-      id: `${config.institution.issuerDid}#key-1`,
-      type: 'JsonWebKey2020',
-      controller: config.institution.issuerDid,
-      publicKeyJwk: publicKey.export({ format: 'jwk' })
-    }],
-    assertionMethod: [`${config.institution.issuerDid}#key-1`]
+    verificationMethod: methods,
+    assertionMethod: methods.map((method) => method.id)
   };
 }
 
 function signDocument(document, created) {
-  const { privateKey } = ensureKeys();
+  const { active } = issuerKeys();
   const proofConfig = {
     type: 'DataIntegrityProof',
     cryptosuite: 'eddsa-jcs-2022',
     created,
-    verificationMethod: `${config.institution.issuerDid}#key-1`,
+    verificationMethod: `${config.institution.issuerDid}#${active.id}`,
     proofPurpose: 'assertionMethod'
   };
   const signingInput = stableStringify({ document, proofConfig });
-  const signature = crypto.sign(null, Buffer.from(signingInput), privateKey);
+  const signature = crypto.sign(null, Buffer.from(signingInput), active.privateKey);
   return { ...proofConfig, proofValue: `u${signature.toString('base64url')}` };
 }
 
@@ -76,20 +110,23 @@ export function verifyDocumentProof(document) {
     if (!proof?.proofValue?.startsWith('u')) return false;
     const { proofValue, ...proofConfig } = proof;
     const signingInput = stableStringify({ document: unsigned, proofConfig });
-    const { publicKey } = ensureKeys();
-    return crypto.verify(null, Buffer.from(signingInput), publicKey, Buffer.from(proofValue.slice(1), 'base64url'));
+    const signature = Buffer.from(proofValue.slice(1), 'base64url');
+    return issuerKeys().verification.some((key) => {
+      try { return crypto.verify(null, Buffer.from(signingInput), key.publicKey, signature); }
+      catch { return false; }
+    });
   } catch {
     return false;
   }
 }
 
 function signJwt(payload) {
-  const { privateKey } = ensureKeys();
-  const header = { alg: 'EdDSA', kid: `${config.institution.issuerDid}#key-1`, typ: 'vc+jwt' };
+  const { active } = issuerKeys();
+  const header = { alg: 'EdDSA', kid: `${config.institution.issuerDid}#${active.id}`, typ: 'vc+jwt' };
   const encodedHeader = base64url(JSON.stringify(header));
   const encodedPayload = base64url(JSON.stringify(payload));
   const input = `${encodedHeader}.${encodedPayload}`;
-  const signature = crypto.sign(null, Buffer.from(input), privateKey).toString('base64url');
+  const signature = crypto.sign(null, Buffer.from(input), active.privateKey).toString('base64url');
   return `${input}.${signature}`;
 }
 
@@ -97,11 +134,19 @@ export function verifyJwt(jwt) {
   try {
     const [header, payload, signature] = String(jwt).split('.');
     if (!header || !payload || !signature) return false;
-    const { publicKey } = ensureKeys();
-    return crypto.verify(null, Buffer.from(`${header}.${payload}`), publicKey, Buffer.from(signature, 'base64url'));
+    const signed = Buffer.from(`${header}.${payload}`);
+    const signatureBytes = Buffer.from(signature, 'base64url');
+    return issuerKeys().verification.some((key) => {
+      try { return crypto.verify(null, signed, key.publicKey, signatureBytes); }
+      catch { return false; }
+    });
   } catch {
     return false;
   }
+}
+
+export function currentIssuerKeyId() {
+  return issuerKeys().active.id;
 }
 
 export function createCredentialBundle({

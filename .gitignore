@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+!.env.example
+
+# Runtime data — never commit databases, signing keys or uploaded evidence
+data/
+storage/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db

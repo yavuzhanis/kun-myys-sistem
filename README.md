@@ -100,7 +100,8 @@ Bu bağlantılar gelene kadar sistem yerel kimlik, SQLite ve kurum içi Ed25519 
 
 ## Önemli güvenlik notları
 
-- `data/keys/issuer-ed25519-private.pem` kurumun imza anahtarıdır; yedeklenmeli, erişimi sınırlandırılmalı ve kaynak kod deposuna eklenmemelidir.
+- `data/keys/issuer-ed25519-private.pem` kurumun imza anahtarıdır; yedeklenmeli, erişimi sınırlandırılmalı ve kaynak kod deposuna eklenmemelidir. `data/` ve `storage/` dizinleri `.gitignore` kapsamındadır; bunları depoya eklemeyin.
+- Anahtar rotasyonu için `node bin/rotate-keys.js` çalıştırın. Eski açık anahtar `data/keys/retired/` altına taşınır; daha önce imzalanmış belgeler doğrulanmaya devam eder, yeni belgeler yeni anahtarla imzalanır. İmza anahtarı ifşa olduysa rotasyonun ardından eski anahtarla üretilmiş tüm belgeleri gözden geçirin.
 - `APP_URL`, kullanıcıya verilen doğrulama bağlantısının alan adıdır; canlı ortamda kesinlikle HTTPS olmalıdır.
 - T.C. kimlik/pasaport bilgisi kamuya açık doğrulamada maskelenir ve dijital belge öznesinde doğrudan kullanılmaz.
 - Denetim zinciri değişiklikleri görünür kılar; hukuki anlamda değişmez arşiv için zaman damgası/HSM veya WORM depolama eklenmelidir.
